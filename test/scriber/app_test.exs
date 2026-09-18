@@ -275,3 +275,63 @@ defmodule Scriber.AppTest do
     end)
   end
 end
+
+defmodule Scriber.AppAimTest do
+  use ExUnit.Case, async: true
+
+  alias Cauldron2D.{Player, World}
+  alias Scriber.{App, Entity, Game}
+
+  setup do
+    {:ok, world} = World.start_link(game: Game, game_opts: [seed: 7], tick: :on_input, hz: 1)
+    :ok = Player.join(world, :me, %{})
+    game = World.snapshot(world)
+    {px, py} = game.player.pos
+    mite = %{Entity.spawn(:mite, 99, {px + 2, py}, 1) | awake?: true}
+    game = %{game | fuses: 1, entities: [mite]} |> Game.refresh_vision()
+
+    state = %{
+      game: game,
+      world: world,
+      audio: nil,
+      console?: false,
+      console: nil,
+      target: nil,
+      muted?: false,
+      root: "/tmp/scriber-7",
+      record?: false
+    }
+
+    {:ok, state: state, world: world}
+  end
+
+  test "f takes aim at the nearest creature in view; the move keys and Tab move the cursor; Enter throws the fuse at it",
+       %{state: state} do
+    {:ok, aiming} = App.handle_event({:key, :f}, state)
+    {px, py} = state.game.player.pos
+    assert aiming.target == %{tool: :fuse, cursor: {px + 2, py}}
+
+    {:ok, moved} = App.handle_event({:key, :h}, aiming)
+    assert moved.target.cursor == {px + 1, py}
+    {:ok, cycled} = App.handle_event({:key, :tab}, moved)
+    assert cycled.target.cursor == {px + 2, py}
+
+    {:ok, thrown} = App.handle_event({:key, :enter}, cycled)
+    assert thrown.target == nil
+    assert_receive {:cauldron_frame, %{view: _first}}, 1_000
+    assert_receive {:cauldron_frame, %{view: view}}, 1_000
+    assert view.fuses == 0 or view.messages |> hd() |> elem(0) =~ "fuse"
+  end
+
+  test "Esc puts the tool away, and with none to throw the world says so", %{state: state} do
+    {:ok, aiming} = App.handle_event({:key, :x}, %{state | game: %{state.game | decoys: 1}})
+    assert aiming.target.tool == :decoy
+    {:ok, away} = App.handle_event({:key, :escape}, aiming)
+    assert away.target == nil
+
+    {:ok, refused} = App.handle_event({:key, :f}, %{state | game: %{state.game | fuses: 0}})
+    assert refused.target == nil
+    assert_receive {:cauldron_frame, %{view: view}}, 1_000
+    assert {"No fuse to throw.", :warning} = hd(view.messages)
+  end
+end

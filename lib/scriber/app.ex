@@ -25,6 +25,9 @@ defmodule Scriber.App do
       q e z c            move diagonally (y u b n also work)
       . or s             wait
       a                  apply a patch
+      f / x              throw a fuse / a decoy: aim with the move keys, Tab picks the next
+                         creature in view, Enter throws, Esc puts it away
+      p                  trigger a pulse: everything at arm's reach thrown back and stunned
       Enter              use the tile underfoot: a console, or a stair
       >                  descend
       0                  take up bare hands
@@ -61,6 +64,36 @@ defmodule Scriber.App do
   @poll_ms 400
   @me :me
 
+  @movement %{
+    h: :move_w,
+    j: :move_s,
+    k: :move_n,
+    l: :move_e,
+    left: :move_w,
+    down: :move_s,
+    up: :move_n,
+    right: :move_e,
+    q: :move_nw,
+    e: :move_ne,
+    z: :move_sw,
+    c: :move_se,
+    y: :move_nw,
+    u: :move_ne,
+    b: :move_sw,
+    n: :move_se
+  }
+
+  @offsets %{
+    move_w: {-1, 0},
+    move_s: {0, 1},
+    move_n: {0, -1},
+    move_e: {1, 0},
+    move_nw: {-1, -1},
+    move_ne: {1, -1},
+    move_sw: {-1, 1},
+    move_se: {1, 1}
+  }
+
   @impl true
   def mount(props) do
     Art.install()
@@ -75,6 +108,7 @@ defmodule Scriber.App do
       record?: Map.get(props, :record, false),
       console?: false,
       console: nil,
+      target: nil,
       muted?: false,
       root: Lattice.root(game.seed)
     }
@@ -113,6 +147,7 @@ defmodule Scriber.App do
   """
   @impl true
   def on_message({:cauldron_frame, %{view: game, events: events}}, state) do
+    Sound.play(state.audio, game.player.pos, events)
     Enum.reduce(events, %{state | game: game}, &happened(&2, &1))
   end
 
@@ -126,8 +161,8 @@ defmodule Scriber.App do
 
   defp happened(state, _event), do: state
 
-  defp act(state, action) do
-    Player.input(state.world, @me, %{held: MapSet.new([action]), aim: nil})
+  defp act(state, action, aim \\ nil) do
+    Player.input(state.world, @me, %{held: MapSet.new([action]), aim: aim})
     Player.input(state.world, @me, %{held: MapSet.new(), aim: nil})
     state
   end
@@ -174,6 +209,9 @@ defmodule Scriber.App do
 
   defp press(key, mods, %{console?: true} = state), do: {:ok, console_key(state, key, mods)}
 
+  defp press(key, _mods, %{target: target} = state) when target != nil,
+    do: {:ok, target_key(state, key)}
+
   defp press(:Q, _mods, _state), do: {:stop, :normal}
   defp press(:q, [:shift], _state), do: {:stop, :normal}
 
@@ -190,6 +228,10 @@ defmodule Scriber.App do
     {:ok, restart(state)}
   end
 
+  defp press(:f, _mods, state), do: {:ok, take_aim(state, :fuse, state.game.fuses)}
+  defp press(:x, _mods, state), do: {:ok, take_aim(state, :decoy, state.game.decoys)}
+  defp press(:p, _mods, state), do: {:ok, act(state, :pulse)}
+
   defp press(:m, _mods, state) do
     muted? = not state.muted?
     Sound.mute(state.audio, muted?)
@@ -202,6 +244,54 @@ defmodule Scriber.App do
       action -> {:ok, act(state, action)}
     end
   end
+
+  defp take_aim(state, tool, 0), do: act(state, throw_action(tool), state.game.player.pos)
+
+  defp take_aim(state, tool, _count) do
+    %{state | target: %{tool: tool, cursor: first_mark(state.game) || state.game.player.pos}}
+  end
+
+  defp throw_action(:fuse), do: :throw_fuse
+  defp throw_action(:decoy), do: :throw_decoy
+
+  defp marks(game) do
+    game.entities
+    |> Enum.filter(&MapSet.member?(game.visible, &1.pos))
+    |> Enum.sort_by(fn %{pos: {x, y}} ->
+      {px, py} = game.player.pos
+      {(x - px) * (x - px) + (y - py) * (y - py), x, y}
+    end)
+    |> Enum.map(& &1.pos)
+  end
+
+  defp first_mark(game), do: List.first(marks(game))
+
+  defp target_key(state, :escape), do: %{state | target: nil}
+
+  defp target_key(%{target: %{tool: tool, cursor: cursor}} = state, :enter),
+    do: act(%{state | target: nil}, throw_action(tool), cursor)
+
+  defp target_key(%{target: target} = state, :tab) do
+    marks = marks(state.game)
+
+    next =
+      case Enum.find_index(marks, &(&1 == target.cursor)) do
+        nil -> List.first(marks)
+        index -> Enum.at(marks, rem(index + 1, length(marks)))
+      end
+
+    %{state | target: %{target | cursor: next || target.cursor}}
+  end
+
+  defp target_key(%{target: target} = state, key) when is_map_key(@movement, key) do
+    {dx, dy} = @offsets[Map.fetch!(@movement, key)]
+    {cx, cy} = target.cursor
+    {width, height} = Game.bounds(state.game)
+    cursor = {min(max(cx + dx, 0), width - 1), min(max(cy + dy, 0), height - 1)}
+    %{state | target: %{target | cursor: cursor}}
+  end
+
+  defp target_key(state, _key), do: state
 
   defp restart(state) do
     stop_world(state.world)
@@ -245,25 +335,6 @@ defmodule Scriber.App do
     end
   end
 
-  @movement %{
-    h: :move_w,
-    j: :move_s,
-    k: :move_n,
-    l: :move_e,
-    left: :move_w,
-    down: :move_s,
-    up: :move_n,
-    right: :move_e,
-    q: :move_nw,
-    e: :move_ne,
-    z: :move_sw,
-    c: :move_se,
-    y: :move_nw,
-    u: :move_ne,
-    b: :move_sw,
-    n: :move_se
-  }
-
   defp action(key) when is_map_key(@movement, key), do: Map.fetch!(@movement, key)
   defp action(:.), do: :wait
   defp action(:s), do: :wait
@@ -300,14 +371,14 @@ defmodule Scriber.App do
     )
   end
 
-  defp main_pane(%{game: %{status: :playing} = game}) do
+  defp main_pane(%{game: %{status: :playing} = game, target: target}) do
     {:cauldron_surface,
      [
        id: :map,
        atlas: Art.name(),
        focus: game.player.pos,
        bounds: Game.bounds(game),
-       cell: Game.cell_fun(game),
+       cell: Game.cell_fun(game, cursor: target && target.cursor),
        mode: Renderer.override(),
        flex: 1
      ]}
@@ -387,8 +458,11 @@ defmodule Scriber.App do
 
   defp inventory(game) do
     [
-      "patches   #{game.patches}",
+      "patches   #{game.patches}   [a]",
+      "fuses     #{game.fuses}   [f]   decoys #{game.decoys}   [x]",
+      "pulses    #{game.pulses}   [p]",
       "shards    #{game.shards}",
+      "code      #{Game.known_code(game)}",
       "gate      #{if Game.unsealed?(game), do: "open", else: "sealed"}"
     ]
   end
@@ -416,11 +490,20 @@ defmodule Scriber.App do
     |> Enum.filter(&MapSet.member?(visible, &1.pos))
     |> Enum.sort_by(& &1.name)
     |> Enum.take(6)
-    |> Enum.map(fn entity -> "#{entity.name}  #{entity.hp}hp" end)
+    |> Enum.map(fn entity ->
+      "#{bar(entity)} #{entity.name}#{if entity.carries, do: " ~", else: ""}#{if entity.awake?, do: "", else: " zz"}"
+    end)
     |> case do
       [] -> ["nothing"]
       list -> list
     end
+  end
+
+  @bar_cells 5
+
+  defp bar(%{hp: hp, max_hp: max_hp}) do
+    filled = max(1, round(hp / max_hp * @bar_cells))
+    String.duplicate("▰", filled) <> String.duplicate("▱", @bar_cells - filled)
   end
 
   defp log_pane(game) do
@@ -447,14 +530,33 @@ defmodule Scriber.App do
     ]
   end
 
+  defp bindings(%{target: %{tool: tool}}),
+    do: [
+      {"hjkl/arrows", "aim"},
+      {"Tab", "next target"},
+      {"Enter", "throw #{tool}"},
+      {"Esc", "cancel"}
+    ]
+
   defp bindings(%{game: %{status: :playing} = game}) do
     [{"hjkl/arrows", "move"}, {"qezc", "diagonal"}] ++
       here(game) ++
+      tools(game) ++
       swaps(game) ++
       [{".", "wait"}, {"Q", "quit"}]
   end
 
   defp bindings(_state), do: [{"r", "new run"}, {"Q", "quit"}]
+
+  defp tools(game) do
+    Enum.flat_map(
+      [{"f", "fuse", game.fuses}, {"x", "decoy", game.decoys}, {"p", "pulse", game.pulses}],
+      fn
+        {_key, _name, 0} -> []
+        {key, name, count} -> [{key, "#{name} (#{count})"}]
+      end
+    )
+  end
 
   defp here(game) do
     use_here =

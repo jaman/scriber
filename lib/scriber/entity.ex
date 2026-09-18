@@ -15,13 +15,19 @@ defmodule Scriber.Entity do
     * `hp` / `max_hp` — current and maximum integrity; `hp` never goes below 0
     * `power` — base damage before the weapon and bonuses in `Scriber.Game`
     * `defense` — damage subtracted per incoming hit
-    * `speed` — actions taken per turn
+    * `speed` — tiles moved per turn; an entity strikes at most once a turn however fast
+    * `pace` — a turn every `pace` turns is one the entity acts on; `2` is slow
     * `art` — sprite name in `Scriber.Art`
     * `glyph` — the same thing for terminals without graphics; kept separately because
       several kinds may share a glyph while having distinct sprites
     * `color` — `{r, g, b}` the glyph is drawn in
     * `shards` — paid to the killer when this entity dies
-    * `awake?` — whether the entity acts; monsters start asleep
+    * `awake?` — whether the entity acts; monsters start asleep, and one that has not
+      seen the player for a while sleeps again
+    * `seen_at` — the turn the entity last saw the player, or `nil`
+    * `goal` — where the entity last knew the player, or a noise, to be walked to
+    * `carries` — `{:fragment, n}` when the entity holds a piece of the gate's code,
+      dropped where it dies
 
   ## Example
 
@@ -46,7 +52,11 @@ defmodule Scriber.Entity do
           glyph: String.t(),
           color: {0..255, 0..255, 0..255},
           shards: non_neg_integer(),
-          awake?: boolean()
+          awake?: boolean(),
+          pace: pos_integer(),
+          seen_at: non_neg_integer() | nil,
+          goal: {integer(), integer()} | nil,
+          carries: {:fragment, non_neg_integer()} | nil
         }
 
   @enforce_keys [:id, :kind, :name, :pos, :hp, :max_hp, :power, :art, :glyph, :color]
@@ -64,7 +74,11 @@ defmodule Scriber.Entity do
     defense: 0,
     speed: 1,
     shards: 0,
-    awake?: false
+    awake?: false,
+    pace: 1,
+    seen_at: nil,
+    goal: nil,
+    carries: nil
   ]
 
   @archetypes %{
@@ -74,41 +88,58 @@ defmodule Scriber.Entity do
       power: 3,
       defense: 0,
       speed: 1,
+      pace: 1,
       glyph: "m",
       color: {150, 200, 120},
-      shards: 2
+      shards: 4,
+      blurb: "quick and brittle; it runs when hurt, and comes back"
     },
     husk: %{
       name: "husk process",
-      hp: 12,
-      power: 4,
+      hp: 14,
+      power: 5,
       defense: 1,
       speed: 1,
+      pace: 2,
       glyph: "h",
       color: {190, 160, 110},
-      shards: 4
+      shards: 8,
+      blurb: "slow and heavy; it moves every other turn, so it can be walked around"
     },
     sentry: %{
       name: "page sentry",
       hp: 20,
       power: 6,
       defense: 2,
-      speed: 1,
+      speed: 0,
+      pace: 1,
       glyph: "S",
       color: {120, 180, 235},
-      shards: 8
+      shards: 15,
+      blurb: "it does not move; it strikes what comes within reach"
     },
     daemon: %{
       name: "orphaned daemon",
       hp: 30,
-      power: 9,
+      power: 7,
       defense: 3,
       speed: 2,
+      pace: 1,
       glyph: "D",
       color: {235, 110, 130},
-      shards: 15
+      shards: 30,
+      blurb: "fast, and it hunts by sound; waiting is silent, walking is not"
     }
   }
+
+  @doc "A line on what a kind is and how it behaves, for the moment it is first noticed."
+  @spec blurb(kind()) :: String.t()
+  def blurb(kind) when is_map_key(@archetypes, kind), do: @archetypes[kind].blurb
+  def blurb(:scriber), do: "you"
+
+  @doc "Whether the kind moves at all."
+  @spec mobile?(t()) :: boolean()
+  def mobile?(%__MODULE__{speed: speed}), do: speed > 0
 
   @doc """
   Build a monster of `kind` with `id`, standing at `pos`, scaled for `depth`.
@@ -117,7 +148,7 @@ defmodule Scriber.Entity do
   value raise a `FunctionClauseError`. Use `scriber/1` for the player.
 
   `depth` scales the archetype: `hp` and `max_hp` gain `(depth - 1) * 2`, and `power` gains
-  `div(depth - 1, 2)`. `defense`, `speed` and `shards` do not change with depth.
+  `div(depth - 1, 2)`. `defense`, `speed`, `pace` and `shards` do not change with depth.
 
   The entity starts asleep (`awake?: false`) and at full health.
   """
@@ -136,6 +167,7 @@ defmodule Scriber.Entity do
       power: archetype.power + div(depth - 1, 2),
       defense: archetype.defense,
       speed: archetype.speed,
+      pace: archetype.pace,
       art: kind,
       glyph: archetype.glyph,
       color: archetype.color,
@@ -143,7 +175,7 @@ defmodule Scriber.Entity do
     }
   end
 
-  @doc "The player at the start of a run, standing at `pos` with id `0` and 40 integrity."
+  @doc "The player at the start of a run, standing at `pos` with id `0` and 50 integrity."
   @spec scriber({integer(), integer()}) :: t()
   def scriber(pos) do
     %__MODULE__{
@@ -151,8 +183,8 @@ defmodule Scriber.Entity do
       kind: :scriber,
       name: "you",
       pos: pos,
-      hp: 40,
-      max_hp: 40,
+      hp: 50,
+      max_hp: 50,
       power: 5,
       defense: 1,
       art: :scriber,
@@ -170,6 +202,11 @@ defmodule Scriber.Entity do
   def damage(%__MODULE__{} = entity, amount) do
     %{entity | hp: max(entity.hp - amount, 0)}
   end
+
+  @doc "The entity with `max_hp` raised by `amount`, and `hp` with it."
+  @spec harden(t(), non_neg_integer()) :: t()
+  def harden(%__MODULE__{} = entity, amount),
+    do: %{entity | max_hp: entity.max_hp + amount, hp: entity.hp + amount}
 
   @doc "The entity with `amount` added to `hp`, capped at `max_hp`."
   @spec heal(t(), non_neg_integer()) :: t()

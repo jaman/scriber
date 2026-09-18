@@ -2,6 +2,7 @@ defmodule Scriber.MixProject do
   use Mix.Project
 
   @version "0.1.0"
+  @source_url "https://github.com/jaman/scriber"
   @description "A roguelike drawn in real pixels, with a console inside it, on Cauldron."
 
   def project do
@@ -13,7 +14,11 @@ defmodule Scriber.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_options: [warnings_as_errors: true],
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      name: "Scriber",
+      source_url: @source_url,
+      package: package(),
+      docs: docs()
     ]
   end
 
@@ -27,12 +32,37 @@ defmodule Scriber.MixProject do
   defp deps do
     [
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:cauldron_2d, path: "../cauldron/cauldron_2d"},
-      {:cauldron_2d_drafter, path: "../cauldron/cauldron_2d_drafter"},
-      {:drafter, path: "../drafter"},
-      {:tuning_fork, path: "../tuning_fork/tuning_fork"},
-      {:tuning_fork_speaker, path: "../tuning_fork/tuning_fork_speaker"},
-      {:french_curve, path: "../french_curve", override: true}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      family(:cauldron_2d, "~> 0.1.2", "../cauldron/cauldron_2d", []),
+      family(:cauldron_2d_drafter, "~> 0.1.2", "../cauldron/cauldron_2d_drafter", []),
+      family(:drafter, "~> 0.4.0", "../drafter", []),
+      family(:tuning_fork, "~> 0.1.10", "../tuning_fork/tuning_fork", []),
+      family(:tuning_fork_speaker, "~> 0.1.10", "../tuning_fork/tuning_fork_speaker", []),
+      family(:french_curve, "~> 0.1.4", "../french_curve", override: true)
+    ]
+  end
+
+  defp family(app, requirement, path, opts) do
+    if System.get_env("PLUMB_HEX") == nil and File.dir?(path),
+      do: {app, [path: path] ++ opts},
+      else: {app, requirement, Keyword.delete(opts, :override)}
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib mix.exs README.md)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      source_url_pattern: "#{@source_url}/blob/v#{@version}/%{path}#L%{line}",
+      extras: ["README.md"],
+      assets: %{"assets" => "assets"}
     ]
   end
 end

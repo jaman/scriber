@@ -90,13 +90,14 @@ defmodule Scriber.Gear do
       defence: 1,
       pierce: 0,
       parry: 0.0,
-      stun: 0.2,
-      blurb: "power 7, one hit in five stuns"
+      stun: 0.35,
+      blurb: "power 7, one hit in three stuns"
     }
   }
 
   @weapon_cost 45
   @patch_cost 12
+  @tool_costs %{fuse: 15, decoy: 10, pulse: 25}
   @power_step 25
   @defence_step 30
 
@@ -139,6 +140,10 @@ defmodule Scriber.Gear do
   @doc "What selling a weapon back pays: half its `cost/1`, rounded down."
   @spec resale(name()) :: pos_integer()
   def resale(weapon), do: div(cost(weapon), 2)
+
+  @doc "The shard price of a fuse, a decoy or a pulse."
+  @spec tool_cost(:fuse | :decoy | :pulse) :: pos_integer()
+  def tool_cost(tool), do: Map.fetch!(@tool_costs, tool)
 
   @doc "The shard price of one patch."
   @spec patch_cost() :: pos_integer()

@@ -90,7 +90,7 @@ defmodule Scriber.GameTest do
       {px, py} = game.player.pos
       {tx, ty} = target.pos
 
-      fought = Game.command(game, {:move, tx - px, ty - py})
+      fought = until_hit(game, {:move, tx - px, ty - py})
 
       assert fought.player.pos == {px, py}
       assert hd(fought.entities).hp < target.hp
@@ -103,7 +103,7 @@ defmodule Scriber.GameTest do
       {px, py} = game.player.pos
       {tx, ty} = target.pos
 
-      fought = Game.command(game, {:move, tx - px, ty - py})
+      fought = until_hit(game, {:move, tx - px, ty - py})
 
       assert fought.entities == []
       assert fought.shards == game.shards + target.shards
@@ -168,7 +168,8 @@ defmodule Scriber.GameTest do
       deeper = Game.command(game, :descend)
 
       assert deeper.depth == 2
-      assert deeper.player.hp == 12
+      assert deeper.player.hp == 17
+      assert deeper.player.max_hp == game.player.max_hp + 5
       assert deeper.player.power == 9
       refute Game.unsealed?(deeper)
       assert deeper.level.tiles != game.level.tiles
@@ -242,7 +243,9 @@ defmodule Scriber.GameTest do
       after_turn = Game.command(game, :wait)
 
       assert hd(after_turn.entities).awake?
-      assert after_turn.player.hp < game.player.hp or hd(after_turn.entities).pos != before.pos
+
+      assert after_turn.player.hp < game.player.hp or hd(after_turn.entities).pos != before.pos or
+               Enum.any?(after_turn.messages, &(elem(&1, 0) =~ "misses"))
     end
 
     test "stay asleep while out of sight" do
@@ -290,6 +293,12 @@ defmodule Scriber.GameTest do
     [{1, 0}, {-1, 0}, {0, 1}, {0, -1}]
     |> Enum.map(fn {dx, dy} -> {gx + dx, gy + dy} end)
     |> Enum.find(&Level.walkable?(game.level, &1))
+  end
+
+  defp until_hit(game, command, tries \\ 20) do
+    struck = Game.command(game, command)
+    missed? = Enum.any?(Enum.take(struck.messages, 3), &(elem(&1, 0) =~ "miss"))
+    if missed? and tries > 0, do: until_hit(struck, command, tries - 1), else: struck
   end
 
   defp seeded_with_neighbour do

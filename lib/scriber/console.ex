@@ -10,7 +10,7 @@ defmodule Scriber.Console do
       ls [path]              list a directory, marking subdirectories with /
       cat <file>...          print files
       grep <text> <file>...  print lines containing text
-      probe <target>         manifest, seal, or all
+      probe <target>         manifest, seal, all; gate (the code fragments in hand); stratum
       unseal <code>          test a code against the seal
       forge [thing]          list what shards buy, or buy one
       forge sell <weapon>    sell a weapon back for half
@@ -131,11 +131,35 @@ defmodule Scriber.Console do
   def transcript(%__MODULE__{lines: lines}), do: Enum.reverse(lines)
 
   defp run(console, game, "probe", ["gate"], _opts) do
+    known = Scriber.Game.known_code(game)
+    held = MapSet.size(game.fragments)
+    total = Scriber.Game.fragment_count(game.depth)
+
     {console
      |> say("  the gate node does not answer from here.", :plain)
      |> say(
        "  walk into the gate itself; it reports its state to whoever is standing there.",
        :dim
+     )
+     |> say(
+       "  code fragments in hand: #{held} of #{total}   #{known}",
+       if(held > 0, do: :good, else: :plain)
+     )
+     |> say("  the rest of the code is in the records; grep for the gate's state.", :dim), game}
+  end
+
+  defp run(console, game, "probe", ["stratum"], _opts) do
+    {awake, asleep} = Enum.split_with(game.entities, & &1.awake?)
+    carriers = Enum.count(game.entities, &(&1.carries != nil))
+
+    {console
+     |> say(
+       "  stratum #{game.depth}: #{length(awake)} awake, #{length(asleep)} dormant, #{carriers} carrying a fragment",
+       :plain
+     )
+     |> say(
+       "  items lying about: #{map_size(game.items)}   gate: #{if Scriber.Game.unsealed?(game), do: "open", else: "sealed"}",
+       :plain
      ), game}
   end
 
@@ -144,7 +168,7 @@ defmodule Scriber.Console do
      |> say("  ls [path]              what is here", :plain)
      |> say("  cat <file>             read a file", :plain)
      |> say("  grep <text> <file>     lines that contain something", :plain)
-     |> say("  probe <target>         manifest, seal, all", :plain)
+     |> say("  probe <target>         manifest, seal, all, gate, stratum", :plain)
      |> say("  unseal <code>          try a code against the seal", :plain)
      |> say("  forge [thing]          list what shards buy, or buy it", :plain)
      |> say("  forge sell <weapon>    sell one back, for half", :plain)
@@ -217,7 +241,7 @@ defmodule Scriber.Console do
   end
 
   defp run(console, game, "probe", _args, _opts) do
-    {error(console, "usage: probe <manifest|seal|all>   (the gate answers at the gate)"), game}
+    {error(console, "usage: probe <manifest|seal|all|gate|stratum>"), game}
   end
 
   defp run(console, game, "unseal", [code], opts) do

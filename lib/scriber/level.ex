@@ -65,6 +65,7 @@ defmodule Scriber.Level do
   @room_attempts 90
   @min_room 5
   @max_room 11
+  @doors_from 2
 
   @doc """
   Generate a stratum at `depth`, returning `{level, rng}` with the generator advanced.
@@ -72,7 +73,9 @@ defmodule Scriber.Level do
   Rooms are placed by rejection: a fixed number of candidate rectangles are tried and each is
   kept only if it clears every room already placed by one tile. Rooms are then joined in
   placement order by L-shaped corridors, fixtures are placed, and every floor tile with no
-  neighbour gets a `:wall`. Generation never fails — a crowded draw yields fewer rooms, and
+  neighbour gets a `:wall`. From stratum #{@doors_from} the corridor tile at each room's
+  threshold is a `:door`, which blocks sight until it is opened by walking through it.
+  Generation never fails — a crowded draw yields fewer rooms, and
   the degenerate case of no rooms at all yields a level with `spawn: {1, 1}` and no gate or
   console.
 
@@ -85,6 +88,7 @@ defmodule Scriber.Level do
 
     level =
       %__MODULE__{width: @width, height: @height, depth: depth, rooms: rooms, tiles: tiles}
+      |> doors()
       |> place_fixtures()
       |> walls()
 
@@ -171,6 +175,32 @@ defmodule Scriber.Level do
   defp pick_middle([], rooms), do: hd(rooms)
   defp pick_middle(middle, _rooms), do: Enum.at(middle, div(length(middle), 2))
 
+  defp doors(%__MODULE__{depth: depth} = level) when depth < @doors_from, do: level
+
+  defp doors(%__MODULE__{rooms: rooms, tiles: tiles} = level) do
+    thresholds =
+      for {point, :floor} <- tiles,
+          not Enum.any?(rooms, &inside?(&1, point)),
+          Enum.any?(neighbours4(point), fn beside -> Enum.any?(rooms, &inside?(&1, beside)) end),
+          do: point
+
+    %{level | tiles: Enum.reduce(thresholds, tiles, &Map.put(&2, &1, :door))}
+  end
+
+  defp inside?(room, {x, y}),
+    do: x >= room.x and x < room.x + room.width and y >= room.y and y < room.y + room.height
+
+  defp neighbours4({x, y}), do: [{x + 1, y}, {x - 1, y}, {x, y + 1}, {x, y - 1}]
+
+  @doc "The level with the door at `point` opened: a floor tile, sight passing through. Any other tile is left alone."
+  @spec open(t(), point()) :: t()
+  def open(%__MODULE__{tiles: tiles} = level, point) do
+    case Map.get(tiles, point) do
+      :door -> %{level | tiles: Map.put(tiles, point, :floor)}
+      _other -> level
+    end
+  end
+
   defp walls(%__MODULE__{tiles: tiles} = level) do
     filled =
       tiles
@@ -211,12 +241,13 @@ defmodule Scriber.Level do
   @doc """
   Whether `point` lets sight through, as `Cauldron2D.Grid.Fov` asks it.
 
-  True for everything except `:rock` and `:wall`. This is not the inverse of `walkable?/2`:
+  True for everything except `:rock`, `:wall` and a `:door` not yet opened. This is not the
+  inverse of `walkable?/2`:
   a sealed `:gate` blocks movement but not sight.
   """
   @spec transparent?(t(), point()) :: boolean()
   def transparent?(%__MODULE__{} = level, point) do
-    at(level, point) not in [:rock, :wall]
+    at(level, point) not in [:rock, :wall, :door]
   end
 
   @doc "Every walkable tile, sorted, so the same level always yields the same list."

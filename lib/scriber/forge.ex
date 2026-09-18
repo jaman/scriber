@@ -19,7 +19,12 @@ defmodule Scriber.Forge do
 
   @type outcome :: {:ok, Game.t(), String.t()} | {:error, String.t()}
 
-  @upgrades ["power", "defence", "patch"]
+  @upgrades ["power", "defence", "patch", "fuse", "decoy", "pulse"]
+  @tools %{
+    "fuse" => {:fuse, :fuses, "thrown; stuns everything within a tile of where it lands"},
+    "decoy" => {:decoy, :decoys, "thrown; a noise that draws what is awake for six turns"},
+    "pulse" => {:pulse, :pulses, "stuns and throws back everything at arm's reach"}
+  }
 
   @doc "Every transaction as an action a `Cauldron2D.World` takes as input: `:buy_power`, `:buy_mace`, `:sell_mace`, ..."
   @spec actions() :: [atom()]
@@ -87,13 +92,16 @@ defmodule Scriber.Forge do
           blurb: "+1 mitigation (you are on +#{game.defence_bonus})"
         },
         %{key: "patch", cost: Gear.patch_cost(), blurb: "+integrity when applied"}
-      ]
+      ] ++
+      for {key, {tool, _field, blurb}} <- Enum.sort(@tools),
+          do: %{key: key, cost: Gear.tool_cost(tool), blurb: blurb}
   end
 
   @doc """
   Buy one thing, named by the string the player typed.
 
-  Accepts `"power"`, `"defence"` (or `"defense"`), `"patch"`, or anything
+  Accepts `"power"`, `"defence"` (or `"defense"`), `"patch"`, `"fuse"`, `"decoy"`,
+  `"pulse"`, or anything
   `Scriber.Gear.parse/1` resolves to a weapon. On success the shards are debited and the
   purchase applied: a weapon is added to `:owned` but not equipped, `"power"` and
   `"defence"` raise `:power_bonus` / `:defence_bonus` by one, `"patch"` adds one to
@@ -108,6 +116,9 @@ defmodule Scriber.Forge do
   def buy(%Game{} = game, "defence"), do: upgrade(game, :defence)
   def buy(%Game{} = game, "defense"), do: upgrade(game, :defence)
   def buy(%Game{} = game, "patch"), do: patch(game)
+
+  def buy(%Game{} = game, key) when is_map_key(@tools, key),
+    do: tool(game, Map.fetch!(@tools, key))
 
   def buy(%Game{} = game, what) do
     case Gear.parse(what) do
@@ -198,6 +209,16 @@ defmodule Scriber.Forge do
       {:ok, spend(game, cost, patches: game.patches + 1),
        "One patch. #{game.shards - cost} shards left."}
     end
+  end
+
+  defp tool(game, {tool, field, _blurb}) do
+    cost = Gear.tool_cost(tool)
+
+    if game.shards < cost,
+      do: short(game, cost),
+      else:
+        {:ok, spend(game, cost, [{field, Map.fetch!(game, field) + 1}]),
+         "One #{tool}. #{game.shards - cost} shards left."}
   end
 
   defp short(game, cost) do

@@ -17,7 +17,8 @@ defmodule Scriber.WorldTest do
 
   test "every action stands for a command, is handled by the game, or is the forge's" do
     for action <- Game.actions() do
-      assert Game.command_for(action) != nil or action in [:use, :unseal] or
+      assert Game.command_for(action) != nil or
+               action in [:use, :unseal, :throw_fuse, :throw_decoy] or
                action in Forge.actions()
     end
 
@@ -45,7 +46,7 @@ defmodule Scriber.WorldTest do
 
     driver = driver |> World.hold(:me, [:unseal]) |> World.tick(1)
     assert Game.unsealed?(World.view(driver, :me))
-    assert :unsealed in World.events(driver)
+    assert {:unsealed, _gate} = Enum.find(World.events(driver), &match?({:unsealed, _}, &1))
 
     driver =
       driver

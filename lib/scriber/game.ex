@@ -9,9 +9,20 @@ defmodule Scriber.Game do
 
   ## Turn order
 
-  A turn that is accepted runs, in order: the player's action, then one action for every
-  living monster in id order (twice for a monster with `speed: 2`), then a recomputed field
-  of view, then the death check. A command the world refuses — walking into a wall,
+  A turn that is accepted runs, in order: the player's action, then every living monster in
+  id order — a husk only every other turn — then a recomputed field of view, then the death
+  check. A monster strikes or moves in its turn, never both, and moves `speed` tiles; a
+  strike lands on `d10 > 1 + defence`, the player's too.
+
+  ## Creatures
+
+  Monsters start asleep and wake when they see the player; a sentry only when the player
+  comes within three tiles or strikes it, and a daemon also to the player's footsteps within
+  twelve (`:wait` is silent). One that has not seen the player for five turns settles
+  back to sleep. A mite below a third of its integrity runs. Sentries never move. From
+  stratum 3 a daemon guards the gate's room. Some carry a fragment of the gate's code
+  (`fragment_count/1` of them a stratum), dropped where they die; `known_code/1` reads
+  the fragments in hand. A command the world refuses — walking into a wall,
   descending off a stair, equipping what is not owned — costs no turn, leaves the state
   otherwise unchanged, and adds a message rather than raising.
 
@@ -32,10 +43,15 @@ defmodule Scriber.Game do
   A `Cauldron2D.World` started with `tick: :on_input` runs a game of this module one step
   per input: `handle_input/3` keeps the actions newly pressed by the one player who joined
   first, and `step/2` turns each into a `command/2` — `actions/0` lists them, `command_for/1`
-  says which command each is. `:use` descends on a stair and says so elsewhere; `:unseal`
-  is `unseal/1`, held by the application when the gate's marker appears on disk; the forge
-  actions of `Scriber.Forge.actions/0` buy and sell. `view/2` is the game; `drain_events/1`
-  gives `{:descended, depth}` and `:unsealed`.
+  says which command each is. `:use` descends on a stair and says so elsewhere;
+  `:throw_fuse` and `:throw_decoy` throw at the input's `aim`, `:pulse` triggers one;
+  `:unseal` is `unseal/1`, held by the application when the gate's marker appears on disk;
+  the forge actions of `Scriber.Forge.actions/0` buy and sell. `view/2` is the game.
+  `drain_events/1` gives the turn's sounds and happenings, placed where they happened:
+  `{:step, kind, pos}`, `{:noticed, kind, pos}`, `{:chatter, kind, pos}`, `{:hit, weapon,
+  kind, pos}`, `{:miss, kind, pos}`, `{:hurt, amount}`, `:parry`, `{:stunned, kind, pos}`,
+  `{:died, kind, pos}`, `{:pickup, item}`, `:patch`, `:refused`, `:door`, `{:fuse, pos}`,
+  `{:decoy, pos}`, `:pulse`, `{:unsealed, pos}`, `{:descended, depth}`.
 
   ## Example
 
@@ -51,13 +67,17 @@ defmodule Scriber.Game do
   alias Scriber.{Entity, Forge, Gear, Lattice, Level}
 
   @type status :: :playing | :dead | :escaped
-  @type item :: :shard | :patch | :probe
+  @type item ::
+          :shard | :patch | :probe | :fuse | :decoy | :pulse | {:fragment, non_neg_integer()}
+  @type point :: {integer(), integer()}
   @type command ::
           {:move, integer(), integer()}
           | :wait
           | :descend
           | :apply_patch
           | {:equip, Gear.name()}
+          | {:throw, :fuse | :decoy, point()}
+          | :pulse
 
   @type t :: %__MODULE__{
           level: Level.t(),
@@ -101,7 +121,13 @@ defmodule Scriber.Game do
     owned: [],
     power_bonus: 0,
     defence_bonus: 0,
-    stunned: [],
+    stunned: %{},
+    fuses: 0,
+    decoys: 0,
+    pulses: 0,
+    fragments: MapSet.new(),
+    noise: nil,
+    aim: nil,
     player_id: nil,
     held: MapSet.new(),
     pressed: [],
@@ -109,6 +135,15 @@ defmodule Scriber.Game do
   ]
 
   @sight 8
+  @dim_sight 6
+  @dim_from 4
+  @hearing 12
+  @sentry_reach 3
+  @patience 5
+  @throw_range 6
+  @patch_heal 20
+  @fuse_stun 3
+  @stratum_hardening 5
   @max_messages 200
   @final_depth 5
 
@@ -134,7 +169,7 @@ defmodule Scriber.Game do
   def actions,
     do:
       Map.keys(@moves) ++
-        [:wait, :apply_patch, :descend, :use] ++
+        [:wait, :apply_patch, :descend, :use, :throw_fuse, :throw_decoy, :pulse] ++
         Keyword.keys(@equips) ++ [:unseal] ++ Forge.actions()
 
   @doc "The `command/2` an action stands for, or `nil` for one `step/2` handles itself."
@@ -144,7 +179,7 @@ defmodule Scriber.Game do
     {:move, dx, dy}
   end
 
-  def command_for(action) when action in [:wait, :apply_patch, :descend], do: action
+  def command_for(action) when action in [:wait, :apply_patch, :descend, :pulse], do: action
 
   def command_for(action) do
     case List.keyfind(@equips, action, 0) do
@@ -167,12 +202,15 @@ defmodule Scriber.Game do
   def leave(%__MODULE__{} = game, _id), do: game
 
   @impl Cauldron2D.Game
-  def handle_input(%__MODULE__{player_id: id} = game, id, %{held: held}) do
+  def handle_input(%__MODULE__{player_id: id} = game, id, %{held: held} = input) do
     fresh = held |> MapSet.difference(game.held) |> Enum.sort()
-    %{game | held: held, pressed: game.pressed ++ fresh}
+    %{game | held: held, pressed: game.pressed ++ fresh, aim: whole(Map.get(input, :aim))}
   end
 
   def handle_input(%__MODULE__{} = game, _id, _input), do: game
+
+  defp whole({x, y}), do: {round(x), round(y)}
+  defp whole(nil), do: nil
 
   @impl Cauldron2D.Game
   def step(%__MODULE__{pressed: pressed} = game, _dt) do
@@ -180,6 +218,12 @@ defmodule Scriber.Game do
   end
 
   defp press(game, :unseal), do: unseal(game)
+
+  defp press(%__MODULE__{aim: nil} = game, action) when action in [:throw_fuse, :throw_decoy],
+    do: announce(game, "Nothing aimed at.", :warning)
+
+  defp press(%__MODULE__{aim: aim} = game, :throw_fuse), do: command(game, {:throw, :fuse, aim})
+  defp press(%__MODULE__{aim: aim} = game, :throw_decoy), do: command(game, {:throw, :decoy, aim})
 
   defp press(%__MODULE__{} = game, :use) do
     if at_stair?(game),
@@ -280,7 +324,52 @@ defmodule Scriber.Game do
     game
     |> Map.put(:rng, rng)
     |> spawn_monsters(monsters)
+    |> post_guard()
+    |> hand_out_fragments()
     |> scatter_items(near ++ spare)
+  end
+
+  defp post_guard(%__MODULE__{depth: depth} = game) when depth < 3, do: game
+
+  defp post_guard(%__MODULE__{level: %{rooms: []}} = game), do: game
+
+  defp post_guard(%__MODULE__{level: level} = game) do
+    room = List.last(level.rooms)
+
+    post =
+      level
+      |> Level.open_tiles()
+      |> Enum.find(fn {x, y} = point ->
+        x >= room.x and x < room.x + room.width and y >= room.y and y < room.y + room.height and
+          point != level.gate and occupant(game, point) == nil
+      end)
+
+    case post do
+      nil ->
+        game
+
+      spot ->
+        %{
+          game
+          | entities: [Entity.spawn(:daemon, game.next_id, spot, game.depth) | game.entities],
+            next_id: game.next_id + 1
+        }
+    end
+  end
+
+  defp hand_out_fragments(game) do
+    count = fragment_count(game.depth)
+    {carriers, rng} = Rng.shuffle(game.rng, Enum.map(game.entities, & &1.id))
+
+    entities =
+      carriers
+      |> Enum.take(count)
+      |> Enum.with_index()
+      |> Enum.reduce(game.entities, fn {id, n}, acc ->
+        replace(acc, %{Enum.find(acc, &(&1.id == id)) | carries: {:fragment, n}})
+      end)
+
+    %{game | entities: entities, rng: rng, fragments: MapSet.new()}
   end
 
   defp beyond_sight?({x, y}, {sx, sy}) do
@@ -321,7 +410,16 @@ defmodule Scriber.Game do
       if rem(index, stride) == 0 and div(index, stride) < promised do
         %{acc | items: Map.put(acc.items, spot, :patch)}
       else
-        {item, rng} = Rng.weighted(acc.rng, [{6, :shard}, {3, :patch}, {1, :probe}])
+        {item, rng} =
+          Rng.weighted(acc.rng, [
+            {6, :shard},
+            {3, :patch},
+            {1, :probe},
+            {2, :fuse},
+            {1, :decoy},
+            {1, :pulse}
+          ])
+
         %{acc | items: Map.put(acc.items, spot, item), rng: rng}
       end
     end)
@@ -341,10 +439,11 @@ defmodule Scriber.Game do
 
   Every stratum places at least this many patches, spread evenly through the item positions
   rather than clustered. The remaining items are rolled from a weighted table of shards,
-  patches and probes, so the actual patch count is never lower than this and is often higher.
+  patches, probes, fuses, decoys and pulses, so the actual patch count is never lower than
+  this and is often higher.
   """
   @spec patch_floor(pos_integer()) :: pos_integer()
-  def patch_floor(depth), do: max(1, div(depth + 1, 2))
+  def patch_floor(depth), do: max(2, div(depth + 1, 2))
 
   @doc """
   Resolve one turn from the player's `command`, returning the game after it.
@@ -355,12 +454,20 @@ defmodule Scriber.Game do
       tile. Walking into a sealed gate reports the gate's node state instead and costs no
       turn; walking into anything else solid is refused.
     * `:wait` — spend the turn doing nothing.
-    * `:apply_patch` — spend one patch to heal 15, capped at `max_hp`. Refused with no
+    * `:apply_patch` — spend one patch to heal 20, capped at `max_hp`. Refused with no
       patches or at full health.
     * `{:equip, weapon}` — take up a weapon. Refused unless the weapon is `:unarmed` or in
       `:owned`, refused if already held, and refused while an awake monster is adjacent.
     * `:descend` — take the stair underfoot to the next stratum, or end the run with
-      `status: :escaped` when already at `final_depth/0`. Refused off a stair.
+      `status: :escaped` when already at `final_depth/0`. Refused off a stair. Descending
+      raises the player's integrity by five.
+    * `{:throw, :fuse | :decoy, point}` — throw one at a visible tile within six: a fuse
+      stuns everything within a tile of it for two turns, a decoy is a noise that draws
+      what is awake for six. Refused with none in hand, or out of range or sight.
+    * `:pulse` — spend a pulse: everything at arm's reach is thrown back a tile and stunned
+      for a turn.
+
+  A move into a stunned creature slips past it, the two exchanging tiles.
 
   A game whose `:status` is not `:playing` is returned unchanged for every command, so a
   caller need not check before dispatching.
@@ -377,6 +484,7 @@ defmodule Scriber.Game do
 
     case occupant(game, target) do
       nil -> walk(game, target)
+      %{id: id} = entity when is_map_key(game.stunned, id) -> swap(game, entity)
       entity -> game |> player_attacks(entity) |> end_turn()
     end
   end
@@ -412,11 +520,12 @@ defmodule Scriber.Game do
         announce(game, "Integrity is already whole.", :warning)
 
       true ->
-        healed = Entity.heal(game.player, 15)
+        healed = Entity.heal(game.player, @patch_heal)
         gained = healed.hp - game.player.hp
 
         %{game | player: healed, patches: game.patches - 1}
         |> announce("You apply a patch. +#{gained} integrity.", :good)
+        |> emit(:patch)
         |> end_turn()
     end
   end
@@ -425,7 +534,75 @@ defmodule Scriber.Game do
     if Level.at(game.level, game.player.pos) == :stair do
       descend(game)
     else
-      announce(game, "Nothing to descend here.", :warning)
+      game |> announce("Nothing to descend here.", :warning) |> emit(:refused)
+    end
+  end
+
+  def command(%__MODULE__{} = game, {:throw, tool, target}) do
+    field = tool_field(tool)
+
+    cond do
+      Map.fetch!(game, field) == 0 ->
+        game |> announce("No #{tool} to throw.", :warning) |> emit(:refused)
+
+      not MapSet.member?(game.visible, target) or
+          not within?(target, game.player.pos, @throw_range) ->
+        game |> announce("Too far, or out of sight.", :warning) |> emit(:refused)
+
+      true ->
+        game |> Map.put(field, Map.fetch!(game, field) - 1) |> land(tool, target) |> end_turn()
+    end
+  end
+
+  def command(%__MODULE__{pulses: 0} = game, :pulse),
+    do: game |> announce("No pulse to trigger.", :warning) |> emit(:refused)
+
+  def command(%__MODULE__{} = game, :pulse) do
+    %{game | pulses: game.pulses - 1}
+    |> announce("You trigger a pulse. Everything at arm's reach is thrown back.", :good)
+    |> emit(:pulse)
+    |> then(fn acc -> Enum.reduce(acc.entities, acc, &shove(&2, &1)) end)
+    |> end_turn()
+  end
+
+  defp tool_field(:fuse), do: :fuses
+  defp tool_field(:decoy), do: :decoys
+
+  defp land(game, :fuse, target) do
+    game
+    |> announce("The fuse goes off.", :good)
+    |> emit({:fuse, target})
+    |> then(fn acc ->
+      Enum.reduce(
+        acc.entities,
+        acc,
+        &if(adjacent?(&1.pos, target), do: stun(&2, &1, @fuse_stun), else: &2)
+      )
+    end)
+  end
+
+  defp land(game, :decoy, target) do
+    %{game | noise: %{pos: target, until: game.turn + 6, by: :decoy}}
+    |> announce("The decoy starts to chatter.", :good)
+    |> emit({:decoy, target})
+  end
+
+  defp shove(game, entity) do
+    if adjacent?(entity.pos, game.player.pos) do
+      {ex, ey} = entity.pos
+      {px, py} = game.player.pos
+      away = {ex + sign(ex - px), ey + sign(ey - py)}
+
+      pushed =
+        case free_step(game, entity, [away]),
+          do: (
+            nil -> entity
+            spot -> %{entity | pos: spot}
+          )
+
+      game |> store(pushed) |> stun(pushed, 1)
+    else
+      game
     end
   end
 
@@ -435,9 +612,12 @@ defmodule Scriber.Game do
   end
 
   defp descend(%__MODULE__{} = game) do
-    game
+    %{game | player: Entity.harden(game.player, @stratum_hardening)}
     |> enter_stratum(game.depth + 1)
-    |> announce("You descend to stratum #{game.depth + 1}.", :system)
+    |> announce(
+      "You descend to stratum #{game.depth + 1}. Integrity +#{@stratum_hardening}.",
+      :system
+    )
     |> emit({:descended, game.depth + 1})
   end
 
@@ -468,6 +648,8 @@ defmodule Scriber.Game do
       Level.walkable?(game.level, target) ->
         game
         |> Map.put(:player, %{game.player | pos: target})
+        |> open_door(target)
+        |> footstep(target)
         |> pick_up(target)
         |> arrival_notice(target)
         |> end_turn()
@@ -479,8 +661,33 @@ defmodule Scriber.Game do
         |> announce("Find that state in the records at the console.", :system)
 
       true ->
-        announce(game, "Solid.", :warning)
+        game |> announce("Solid.", :warning) |> emit(:refused)
     end
+  end
+
+  defp open_door(game, target) do
+    if Level.at(game.level, target) == :door,
+      do: %{game | level: Level.open(game.level, target)} |> emit(:door),
+      else: game
+  end
+
+  defp footstep(%__MODULE__{noise: %{by: :decoy}} = game, target),
+    do: emit(game, {:step, :scriber, target})
+
+  defp footstep(game, target) do
+    %{game | noise: %{pos: target, until: game.turn + 1, by: :scriber}}
+    |> emit({:step, :scriber, target})
+  end
+
+  defp swap(game, entity) do
+    here = game.player.pos
+
+    game
+    |> Map.put(:player, %{game.player | pos: entity.pos})
+    |> store(%{entity | pos: here})
+    |> announce("You slip past the reeling #{entity.name}.", :good)
+    |> footstep(entity.pos)
+    |> end_turn()
   end
 
   defp arrival_notice(%__MODULE__{} = game, target) do
@@ -501,17 +708,62 @@ defmodule Scriber.Game do
   defp collect(game, :shard) do
     %{game | shards: game.shards + 1}
     |> announce("You pocket a shard. (#{game.shards + 1})", :good)
+    |> emit({:pickup, :shard})
+  end
+
+  defp collect(game, tool) when tool in [:fuse, :decoy, :pulse] do
+    field = if(tool == :pulse, do: :pulses, else: tool_field(tool))
+
+    game
+    |> Map.put(field, Map.fetch!(game, field) + 1)
+    |> announce("You pick up a #{tool}. (#{Map.fetch!(game, field) + 1})", :good)
+    |> emit({:pickup, tool})
+  end
+
+  defp collect(game, {:fragment, n}) do
+    fragments = MapSet.put(game.fragments, n)
+
+    %{game | fragments: fragments}
+    |> announce(
+      "A fragment of the gate's code. You know #{MapSet.size(fragments)} of #{fragment_count(game.depth)}: #{known_code(%{game | fragments: fragments})}",
+      :good
+    )
+    |> emit({:pickup, :fragment})
   end
 
   defp collect(game, :patch) do
     %{game | patches: game.patches + 1}
     |> announce("You pick up a patch. (#{game.patches + 1})", :good)
+    |> emit({:pickup, :patch})
   end
 
   defp collect(game, :probe) do
     raised = %{game | power_bonus: game.power_bonus + 1}
 
-    announce(raised, "A sharper probe. Your damage rises to #{stats(raised).power}.", :good)
+    raised
+    |> announce("A sharper probe. Your damage rises to #{stats(raised).power}.", :good)
+    |> emit({:pickup, :probe})
+  end
+
+  @doc "How many fragments the gate's code is split into on a stratum: two, then three, then four."
+  @spec fragment_count(pos_integer()) :: pos_integer()
+  def fragment_count(depth), do: min(4, 1 + depth)
+
+  @doc "The gate's code with the characters the fragments in hand give, `?` for the rest."
+  @spec known_code(t()) :: String.t()
+  def known_code(%__MODULE__{} = game) do
+    code = Lattice.code(game.seed, game.depth)
+    count = fragment_count(game.depth)
+    size = div(String.length(code), count)
+
+    Enum.map_join(0..(count - 1)//1, fn n ->
+      piece =
+        String.slice(code, n * size, if(n == count - 1, do: String.length(code), else: size))
+
+      if MapSet.member?(game.fragments, n),
+        do: piece,
+        else: String.duplicate("?", String.length(piece))
+    end)
   end
 
   @doc """
@@ -540,12 +792,28 @@ defmodule Scriber.Game do
   end
 
   defp swing(game, attacker, victim, weapon) do
-    {damage, rng} = damage_roll(game.rng, attacker, victim, weapon.pierce)
-    hurt = Entity.damage(victim, damage)
+    {hit?, rng} = hit_roll(game.rng, victim.defense)
 
-    game = %{game | rng: rng, entities: replace(game.entities, hurt)}
+    victim = if victim.awake?, do: victim, else: wake(victim, game)
 
-    {announce(game, "You hit the #{victim.name} for #{damage}.", :combat), hurt}
+    if hit? do
+      {damage, rng} = damage_roll(rng, attacker, victim, weapon.pierce)
+      hurt = Entity.damage(victim, damage)
+      game = %{game | rng: rng, entities: replace(game.entities, hurt)}
+
+      {game
+       |> announce("You hit the #{victim.name} for #{damage}.", :combat)
+       |> emit({:hit, weapon.name, victim.kind, victim.pos}), hurt}
+    else
+      {%{game | rng: rng, entities: replace(game.entities, victim)}
+       |> announce("You swing at the #{victim.name} and miss.", :combat)
+       |> emit({:miss, :scriber}), victim}
+    end
+  end
+
+  defp hit_roll(rng, armour) do
+    {roll, rng} = Rng.dice(rng, 1, 10)
+    {roll > 1 + max(armour, 0), rng}
   end
 
   defp maybe_stun(game, _target, %{stun: chance}) when chance <= 0.0, do: game
@@ -554,12 +822,14 @@ defmodule Scriber.Game do
     {roll, rng} = Rng.dice(game.rng, 1, 100)
     game = %{game | rng: rng}
 
-    if Entity.alive?(target) and roll <= chance * 100 do
-      %{game | stunned: [target.id | game.stunned]}
-      |> announce("The #{target.name} reels, senseless.", :good)
-    else
-      game
-    end
+    if Entity.alive?(target) and roll <= chance * 100,
+      do: stun(game, target, 1) |> announce("The #{target.name} reels, senseless.", :good),
+      else: game
+  end
+
+  defp stun(game, target, turns) do
+    %{game | stunned: Map.update(game.stunned, target.id, turns, &max(&1, turns))}
+    |> emit({:stunned, target.kind, target.pos})
   end
 
   defp resolve_death(%__MODULE__{} = game, entity) do
@@ -569,10 +839,20 @@ defmodule Scriber.Game do
       %{
         game
         | entities: Enum.reject(game.entities, &(&1.id == entity.id)),
-          shards: game.shards + entity.shards
+          shards: game.shards + entity.shards,
+          stunned: Map.delete(game.stunned, entity.id)
       }
+      |> drop(entity)
       |> announce("The #{entity.name} unravels. +#{entity.shards} shards.", :good)
+      |> emit({:died, entity.kind, entity.pos})
     end
+  end
+
+  defp drop(game, %{carries: nil}), do: game
+
+  defp drop(game, %{carries: {:fragment, _n} = fragment, pos: pos, name: name}) do
+    %{game | items: Map.put(game.items, pos, fragment)}
+    |> announce("Something glints where the #{name} was: a fragment of the code.", :good)
   end
 
   defp damage_roll(rng, attacker, defender, pierce \\ 0) do
@@ -586,50 +866,179 @@ defmodule Scriber.Game do
     game
     |> Map.update!(:turn, &(&1 + 1))
     |> monsters_act()
+    |> fade_noise()
     |> refresh_vision()
     |> check_player()
   end
 
+  defp fade_noise(%__MODULE__{noise: %{until: until}} = game) when until <= game.turn,
+    do: %{game | noise: nil}
+
+  defp fade_noise(%__MODULE__{noise: %{pos: pos}} = game), do: emit(game, {:decoy, pos})
+  defp fade_noise(game), do: game
+
   defp monsters_act(%__MODULE__{} = game) do
     game.entities
     |> Enum.sort_by(& &1.id)
-    |> Enum.reduce(game, fn entity, acc -> act_repeatedly(acc, entity.id, entity.speed) end)
+    |> Enum.reduce(game, fn entity, acc -> act(acc, entity.id) end)
   end
 
-  defp act_repeatedly(game, _id, 0), do: game
-
-  defp act_repeatedly(game, id, times) do
+  defp act(%__MODULE__{status: :playing} = game, id) do
     case Enum.find(game.entities, &(&1.id == id)) do
       nil -> game
-      entity -> game |> act(entity) |> act_repeatedly(id, times - 1)
+      entity -> game |> notice(entity) |> turn_of(entity)
     end
   end
 
-  defp act(%__MODULE__{status: :playing} = game, entity) do
-    entity = wake(game, entity)
+  defp act(game, _id), do: game
+
+  defp turn_of(game, %{id: id} = entity) do
+    entity = Enum.find(game.entities, &(&1.id == id)) || entity
 
     cond do
-      not entity.awake? ->
-        store(game, entity)
-
-      entity.id in game.stunned ->
-        %{store(game, entity) | stunned: List.delete(game.stunned, entity.id)}
-
-      adjacent?(entity.pos, game.player.pos) ->
-        game |> store(entity) |> monster_attacks(entity)
-
-      true ->
-        game |> store(entity) |> step_toward(entity, game.player.pos)
+      not entity.awake? -> game
+      Map.has_key?(game.stunned, id) -> recover(game, entity)
+      rem(game.turn, entity.pace) != 0 -> game
+      true -> game |> move_or_strike(entity) |> chatter(entity)
     end
   end
 
-  defp act(game, _entity), do: game
-
-  defp wake(%__MODULE__{} = game, %{awake?: false} = entity) do
-    %{entity | awake?: MapSet.member?(game.visible, entity.pos)}
+  defp recover(game, entity) do
+    case Map.fetch!(game.stunned, entity.id) do
+      1 -> %{game | stunned: Map.delete(game.stunned, entity.id)}
+      turns -> %{game | stunned: Map.put(game.stunned, entity.id, turns - 1)}
+    end
   end
 
-  defp wake(_game, entity), do: entity
+  defp move_or_strike(game, entity) do
+    cond do
+      fleeing?(game, entity) -> flee(game, entity)
+      adjacent?(entity.pos, game.player.pos) -> monster_attacks(game, entity)
+      not Entity.mobile?(entity) -> game
+      true -> approach(game, entity, entity.speed)
+    end
+  end
+
+  defp fleeing?(_game, %{kind: :mite} = mite), do: mite.hp * 3 < mite.max_hp
+  defp fleeing?(_game, _entity), do: false
+
+  defp flee(game, entity) do
+    {ex, ey} = entity.pos
+    {px, py} = game.player.pos
+    away = {ex + sign(ex - px), ey + sign(ey - py)}
+
+    case free_step(game, entity, [away | sidesteps(entity.pos, away)]) do
+      nil ->
+        monster_attacks(game, entity)
+
+      spot ->
+        game
+        |> store(%{entity | pos: spot})
+        |> emit({:step, entity.kind, spot})
+        |> announce_once(entity, "The #{entity.name} skitters away, leaking.", :combat)
+    end
+  end
+
+  defp announce_once(game, %{seen_at: seen_at}, text, tone) when seen_at == game.turn,
+    do: announce(game, text, tone)
+
+  defp announce_once(game, _entity, _text, _tone), do: game
+
+  defp approach(game, _entity, 0), do: game
+
+  defp approach(game, entity, steps) do
+    case destination(game, entity) do
+      nil ->
+        game
+
+      goal ->
+        case step_toward(game, entity, goal) do
+          nil ->
+            game
+
+          moved ->
+            game
+            |> store(moved)
+            |> emit({:step, moved.kind, moved.pos})
+            |> continue(moved, steps - 1)
+        end
+    end
+  end
+
+  defp continue(game, _entity, 0), do: game
+
+  defp continue(game, entity, steps) do
+    if adjacent?(entity.pos, game.player.pos), do: game, else: approach(game, entity, steps)
+  end
+
+  defp destination(game, %{seen_at: seen_at} = entity) when seen_at == game.turn,
+    do: if(entity.pos == game.player.pos, do: nil, else: game.player.pos)
+
+  defp destination(%{noise: %{pos: pos}}, _entity), do: pos
+  defp destination(_game, %{goal: goal, pos: pos}) when goal != nil and goal != pos, do: goal
+  defp destination(_game, _entity), do: nil
+
+  defp notice(game, %{awake?: false} = entity) do
+    if roused?(game, entity),
+      do: game |> store(wake(entity, game)) |> noticed(entity),
+      else: game
+  end
+
+  defp notice(game, entity) do
+    cond do
+      MapSet.member?(game.visible, entity.pos) ->
+        store(game, %{entity | seen_at: game.turn, goal: game.player.pos})
+
+      asleep_again?(game, entity) ->
+        settle(game, entity)
+
+      true ->
+        game
+    end
+  end
+
+  defp roused?(game, %{kind: :sentry} = sentry),
+    do: within?(sentry.pos, game.player.pos, @sentry_reach)
+
+  defp roused?(game, %{kind: :daemon} = daemon),
+    do: MapSet.member?(game.visible, daemon.pos) or hears?(game, daemon)
+
+  defp roused?(game, entity), do: MapSet.member?(game.visible, entity.pos)
+
+  defp hears?(%{noise: %{by: :scriber, pos: pos}}, daemon), do: within?(daemon.pos, pos, @hearing)
+  defp hears?(_game, _daemon), do: false
+
+  defp settle(game, entity) do
+    game
+    |> store(%{entity | awake?: false, goal: nil})
+    |> announce_if_seen(entity, "The #{entity.name} loses you and settles.", :system)
+  end
+
+  defp wake(entity, game), do: %{entity | awake?: true, seen_at: game.turn, goal: game.player.pos}
+
+  defp within?({ax, ay}, {bx, by}, radius),
+    do: (ax - bx) * (ax - bx) + (ay - by) * (ay - by) <= radius * radius
+
+  defp asleep_again?(game, %{seen_at: seen_at}) when is_integer(seen_at),
+    do: game.turn - seen_at >= @patience and game.noise == nil
+
+  defp asleep_again?(_game, _entity), do: false
+
+  defp noticed(game, entity) do
+    game
+    |> announce("The #{entity.name} notices you: #{Entity.blurb(entity.kind)}.", :warning)
+    |> emit({:noticed, entity.kind, entity.pos})
+  end
+
+  defp announce_if_seen(game, entity, text, tone) do
+    if MapSet.member?(game.seen, entity.pos), do: announce(game, text, tone), else: game
+  end
+
+  defp chatter(game, entity) do
+    {roll, rng} = Rng.dice(game.rng, 1, 8)
+    game = %{game | rng: rng}
+    if roll == 1, do: emit(game, {:chatter, entity.kind, entity.pos}), else: game
+  end
 
   defp store(%__MODULE__{} = game, entity) do
     %{game | entities: replace(game.entities, entity)}
@@ -639,14 +1048,25 @@ defmodule Scriber.Game do
     weapon = Gear.fetch(game.weapon)
     guard = %{game.player | defense: weapon.defence + game.defence_bonus}
     {parried?, rng} = parry(game.rng, weapon)
+    {hit?, rng} = hit_roll(rng, guard.defense)
 
-    if parried? do
-      %{game | rng: rng} |> announce("You turn the #{entity.name}'s strike aside.", :good)
-    else
-      {damage, rng} = damage_roll(rng, entity, guard)
+    cond do
+      parried? ->
+        %{game | rng: rng}
+        |> announce("You turn the #{entity.name}'s strike aside.", :good)
+        |> emit(:parry)
 
-      %{game | rng: rng, player: Entity.damage(game.player, damage)}
-      |> announce("The #{entity.name} hits you for #{damage}.", :hurt)
+      not hit? ->
+        %{game | rng: rng}
+        |> announce("The #{entity.name} lunges and misses.", :combat)
+        |> emit({:miss, entity.kind, entity.pos})
+
+      true ->
+        {damage, rng} = damage_roll(rng, entity, guard)
+
+        %{game | rng: rng, player: Entity.damage(game.player, damage)}
+        |> announce("The #{entity.name} hits you for #{damage}.", :hurt)
+        |> emit({:hurt, damage})
     end
   end
 
@@ -662,8 +1082,8 @@ defmodule Scriber.Game do
     step = {ex + sign(tx - ex), ey + sign(ty - ey)}
 
     case free_step(game, entity, [step | sidesteps(entity.pos, step)]) do
-      nil -> game
-      target -> store(game, %{entity | pos: target})
+      nil -> nil
+      target -> %{entity | pos: target}
     end
   end
 
@@ -705,10 +1125,15 @@ defmodule Scriber.Game do
   """
   @spec refresh_vision(t()) :: t()
   def refresh_vision(%__MODULE__{} = game) do
-    visible = Fov.compute(&Level.transparent?(game.level, &1), game.player.pos, @sight)
+    visible = Fov.compute(&Level.transparent?(game.level, &1), game.player.pos, sight(game.depth))
     seen = MapSet.union(game.seen || MapSet.new(), visible)
     %{game | visible: visible, seen: seen}
   end
+
+  @doc "How far the player sees on a stratum: #{@sight} tiles, #{@dim_sight} from stratum #{@dim_from} down."
+  @spec sight(pos_integer()) :: pos_integer()
+  def sight(depth) when depth >= @dim_from, do: @dim_sight
+  def sight(_depth), do: @sight
 
   @doc """
   Open this stratum's gate, turning its `:gate` tile into a walkable `:stair`.
@@ -722,7 +1147,7 @@ defmodule Scriber.Game do
   def unseal(%__MODULE__{} = game) do
     %{game | level: Level.unseal(game.level)}
     |> announce("The gate grinds open. The way down is clear.", :good)
-    |> emit(:unsealed)
+    |> emit({:unsealed, game.level.gate})
   end
 
   @doc "Whether this stratum's gate has been opened in the game state."
@@ -762,13 +1187,16 @@ defmodule Scriber.Game do
   computed when this is called, and the returned closure does only map lookups. It captures
   the game as it is now, so a stale one draws a stale frame.
   """
-  @spec cell_fun(t()) :: (Level.point() -> Cauldron2D.Surface.cell())
-  def cell_fun(%__MODULE__{} = game) do
+  @spec cell_fun(t(), keyword()) :: (Level.point() -> Cauldron2D.Surface.cell())
+  def cell_fun(%__MODULE__{} = game, opts \\ []) do
     occupants =
       game.entities
       |> Map.new(fn entity -> {entity.pos, entity.art} end)
-      |> then(&Map.merge(game.items, &1))
+      |> then(&Map.merge(Map.new(game.items, fn {pos, item} -> {pos, item_art(item)} end), &1))
       |> Map.put(game.player.pos, game.player.art)
+      |> then(
+        &if(cursor = Keyword.get(opts, :cursor), do: Map.put(&1, cursor, :cursor), else: &1)
+      )
 
     fn point ->
       cond do
@@ -783,6 +1211,9 @@ defmodule Scriber.Game do
       end
     end
   end
+
+  defp item_art({:fragment, _n}), do: :fragment
+  defp item_art(item), do: item
 
   @doc "The current stratum's `{width, height}` in tiles, for clamping the camera to it."
   @spec bounds(t()) :: {pos_integer(), pos_integer()}

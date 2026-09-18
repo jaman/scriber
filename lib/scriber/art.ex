@@ -45,7 +45,12 @@ defmodule Scriber.Art do
     {:daemon, "D ", {235, 110, 130}},
     {:shard, "◈ ", {90, 215, 235}},
     {:patch, "+ ", {235, 240, 245}},
-    {:probe, "/ ", {230, 210, 120}}
+    {:probe, "/ ", {230, 210, 120}},
+    {:fuse, "* ", {255, 150, 60}},
+    {:decoy, "% ", {200, 120, 235}},
+    {:pulse, "o ", {120, 235, 255}},
+    {:fragment, "~ ", {255, 230, 120}},
+    {:cursor, "[]", {255, 255, 255}}
   ]
 
   @doc "The atlas name `install/0` registers under and every caller refers to."
@@ -200,6 +205,49 @@ defmodule Scriber.Art do
     |> Draw.fill_rect({4, 8}, {11, 11}, {235, 240, 245, 255})
     |> Draw.fill_rect({6, 6}, {9, 13}, {235, 240, 245, 255})
     |> Draw.fill_rect({7, 9}, {8, 10}, {90, 200, 120, 255})
+  end
+
+  defp raster(:fuse) do
+    overlay()
+    |> Draw.fill_circle({8, 10}, 3, {255, 150, 60, 255})
+    |> Draw.line({8, 7}, {11, 3}, {255, 230, 160, 255})
+    |> Draw.fill_rect({11, 2}, {12, 3}, {255, 255, 200, 255})
+  end
+
+  defp raster(:decoy) do
+    overlay()
+    |> Draw.fill_rect({5, 6}, {10, 12}, {200, 120, 235, 255})
+    |> Draw.line({3, 4}, {5, 6}, {240, 200, 255, 255})
+    |> Draw.line({12, 4}, {10, 6}, {240, 200, 255, 255})
+    |> Draw.fill_rect({7, 8}, {8, 9}, {60, 20, 80, 255})
+  end
+
+  defp raster(:pulse) do
+    overlay()
+    |> Draw.fill_circle({8, 8}, 5, {120, 235, 255, 255})
+    |> Draw.fill_circle({8, 8}, 3, {20, 40, 60, 255})
+    |> Draw.fill_circle({8, 8}, 1, {220, 255, 255, 255})
+  end
+
+  defp raster(:fragment) do
+    overlay()
+    |> Draw.fill_rect({4, 6}, {11, 10}, {255, 230, 120, 255})
+    |> Draw.line({5, 7}, {10, 7}, {120, 90, 30, 255})
+    |> Draw.line({5, 9}, {8, 9}, {120, 90, 30, 255})
+  end
+
+  defp raster(:cursor) do
+    ink = {255, 255, 255, 255}
+
+    overlay()
+    |> Draw.line({0, 0}, {3, 0}, ink)
+    |> Draw.line({0, 0}, {0, 3}, ink)
+    |> Draw.line({12, 0}, {15, 0}, ink)
+    |> Draw.line({15, 0}, {15, 3}, ink)
+    |> Draw.line({0, 15}, {3, 15}, ink)
+    |> Draw.line({0, 12}, {0, 15}, ink)
+    |> Draw.line({12, 15}, {15, 15}, ink)
+    |> Draw.line({15, 12}, {15, 15}, ink)
   end
 
   defp raster(:probe) do
