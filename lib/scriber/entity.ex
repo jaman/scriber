@@ -119,7 +119,7 @@ defmodule Scriber.Entity do
       blurb: "it does not move; it strikes what comes within reach"
     },
     daemon: %{
-      name: "orphaned daemon",
+      name: "process reaper",
       hp: 30,
       power: 7,
       defense: 3,

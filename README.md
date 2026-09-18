@@ -85,7 +85,7 @@ Four kinds, four verbs:
 | **cache mite** | avoid | quick and brittle; runs when hurt and comes back |
 | **husk process** | outrun | slow and heavy; moves every other turn, so it can be walked around or fought in a doorway |
 | **page sentry** | choose | never moves; wakes only when you come within three tiles or strike it, and sits on what it guards |
-| **orphaned daemon** | sneak | fast, and hunts by sound: your footsteps within twelve tiles wake it; waiting is silent. From stratum 3 one guards the gate's room |
+| **process reaper** | sneak | fast, and hunts by sound: your footsteps within twelve tiles wake it; waiting is silent. From stratum 3 one guards the gate's room |
 
 A creature that has not seen you for five turns settles back to sleep, so retreat is a real
 move. Strikes miss — yours on `d10 > 1 + its defence`, theirs on yours — and a creature
@@ -99,7 +99,7 @@ Found lying about, or bought at the forge with the shards that creatures leave:
 
 * **fuse** — thrown at a tile in view within six; stuns everything within a tile of it for
   two turns. A stunned creature is walked past
-* **decoy** — thrown; a noise that draws what is awake for six turns, daemons included
+* **decoy** — thrown; a noise that draws what is awake for six turns, reapers included
 * **pulse** — no aim: everything at arm's reach is thrown back a tile and stunned for a turn.
   The panic button
 
@@ -109,14 +109,14 @@ patches, and buys them back for half.
 ## Going down
 
 Strata change as you go: doors from stratum 2, which block sight until opened; the gate's
-daemon from 3; sight shortens from 4. Descending hardens you by five integrity. The fifth
+reaper from 3; sight shortens from 4. Descending hardens you by five integrity. The fifth
 gate is the way out.
 
 ## Sound
 
 Everything you hear is placed where it happened and fades with distance from where you
 stand: your own footsteps; a creature's step, chatter and cry from where it is, so a
-daemon's double beat is heard from two rooms away before it is seen; each weapon's swing and
+reaper's double beat is heard from two rooms away before it is seen; each weapon's swing and
 each creature's flesh on a hit; misses, parries, stuns, deaths; pickups, the patch, the door,
 the console, the gate grinding open, the drop. Under it, each stratum has its own bed.
 
