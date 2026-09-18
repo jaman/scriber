@@ -1,7 +1,7 @@
 defmodule Scriber.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/jaman/scriber"
   @description "A roguelike drawn in real pixels, with a console inside it, on Cauldron."
 
@@ -33,11 +33,11 @@ defmodule Scriber.MixProject do
     [
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
-      family(:cauldron_2d, "~> 0.1.2", "../cauldron/cauldron_2d", []),
-      family(:cauldron_2d_drafter, "~> 0.1.2", "../cauldron/cauldron_2d_drafter", []),
+      family(:cauldron_2d, "~> 0.1.3", "../cauldron/cauldron_2d", []),
+      family(:cauldron_2d_drafter, "~> 0.1.3", "../cauldron/cauldron_2d_drafter", []),
       family(:drafter, "~> 0.4.0", "../drafter", []),
-      family(:tuning_fork, "~> 0.1.10", "../tuning_fork/tuning_fork", []),
-      family(:tuning_fork_speaker, "~> 0.1.10", "../tuning_fork/tuning_fork_speaker", []),
+      family(:tuning_fork, "~> 0.1.11", "../tuning_fork/tuning_fork", []),
+      family(:tuning_fork_speaker, "~> 0.1.11", "../tuning_fork/tuning_fork_speaker", []),
       family(:french_curve, "~> 0.1.4", "../french_curve", override: true)
     ]
   end
@@ -52,7 +52,7 @@ defmodule Scriber.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md)
+      files: ~w(lib mix.exs README.md TECHNICAL.md)
     ]
   end
 
@@ -61,8 +61,7 @@ defmodule Scriber.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url_pattern: "#{@source_url}/blob/v#{@version}/%{path}#L%{line}",
-      extras: ["README.md"],
-      assets: %{"assets" => "assets"}
+      extras: ["README.md", "TECHNICAL.md"]
     ]
   end
 end
